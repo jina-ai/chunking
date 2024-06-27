@@ -54,9 +54,7 @@ class Chunker:
         else:
             raise ValueError("Unsupported chunking strategy")
 
-    def chunk_semantically(
-        self, text: str, span: Optional[Tuple[int, int]] = None
-    ) -> List[Tuple[int, int, int]]:
+    def chunk_semantically(self, text: str) -> List[Tuple[int, int, int]]:
         nodes = [
             (node.start_char_idx, node.end_char_idx)
             for node in self.splitter.get_nodes_from_documents(
@@ -74,37 +72,12 @@ class Chunker:
         )
         token_offsets = tokens.offset_mapping
 
-        # Find the chunk indices for the start and end of the span
-        start_token_index = (
-            next(
-                (i for i, offset in enumerate(token_offsets) if offset[0] >= span[0]),
-                len(token_offsets),
-            )
-            if span
-            else None
-        )
-        end_token_index = (
-            next(
-                (i for i, offset in enumerate(token_offsets) if offset[1] > span[1]),
-                len(token_offsets),
-            )
-            if span
-            else None
-        )
-        # check if relevant span is outside of the tokenized text (ie. truncated)
-        # if it is, we don't want this sample
-        if span:
-            if start_token_index >= len(token_offsets) or end_token_index >= len(
-                token_offsets
-            ):
-                return None
-
-        chunks_and_labels = []
+        chunk_spans = []
 
         if len(token_offsets) < MIN_TOKENS:
             # If the entire text has fewer than 10 tokens, return it as a single chunk
-            chunks_and_labels.append((0, len(token_offsets) - 1, 1 if span else None))
-            return chunks_and_labels
+            chunk_spans.append((0, len(token_offsets) - 1))
+            return chunk_spans
 
         i = 0
         while i < len(nodes):
@@ -149,59 +122,27 @@ class Chunker:
             ):
                 break
 
-            # Determine if this chunk contains the span
-            if span:
-                contains_span = (
-                    start_chunk_index <= start_token_index <= end_chunk_index
-                    or start_chunk_index <= end_token_index <= end_chunk_index
-                )
-                label = 1 if contains_span else 0
-            else:
-                label = None
-
-            chunks_and_labels.append((start_chunk_index, end_chunk_index, label))
+            chunk_spans.append((start_chunk_index, end_chunk_index))
             i += 1
 
-        return chunks_and_labels
+        return chunk_spans
 
-    def chunk_by_tokens(
-        self, text: str, span: Optional[Tuple[int, int]] = None
-    ) -> List[Tuple[int, int, int]]:
+    def chunk_by_tokens(self, text: str) -> List[Tuple[int, int, int]]:
         tokens = self.tokenizer.encode_plus(
             text, return_offsets_mapping=True, add_special_tokens=False
         )
         token_offsets = tokens.offset_mapping
-        start_token_index = (
-            bisect.bisect_left([offset[0] for offset in token_offsets], span[0])
-            if span
-            else None
-        )
-        end_token_index = (
-            (bisect.bisect_right([offset[1] for offset in token_offsets], span[1]) - 1)
-            if span
-            else None
-        )
 
-        chunks_and_labels = []
+        chunk_spans = []
         for i in range(0, len(token_offsets), self.chunk_size):
             chunk_end = min(i + self.chunk_size - 1, len(token_offsets) - 1)
+            chunk_spans.append((i, chunk_end))
 
-            if span:
-                contains_span = (
-                    i <= start_token_index <= chunk_end
-                    or i <= end_token_index <= chunk_end
-                )
-                label = 1 if contains_span else 0
-            else:
-                label = None
-            chunks_and_labels.append((i, chunk_end, label))
-
-        return chunks_and_labels
+        return chunk_spans
 
     def chunk(
         self,
         text: str,
-        span: Optional[List[int]] = None,
         tokenizer: 'AutoTokenizer' = None,
     ):
         if tokenizer and not self.tokenizer:
@@ -209,8 +150,8 @@ class Chunker:
         if self.chunking_strategy == "semantic":
             if not self.tokenizer:
                 self.tokenizer = tokenizer
-            return self.chunk_semantically(text, span=span)
+            return self.chunk_semantically(text)
         elif self.chunking_strategy == "fixed":
-            return self.chunk_by_tokens(text, span=span)
+            return self.chunk_by_tokens(text)
         else:
             raise ValueError("Unsupported chunking strategy")

@@ -10,6 +10,8 @@ from transformers import AutoTokenizer
 # Set the logging level to WARNING to suppress INFO and DEBUG messages
 logging.getLogger('sentence_transformers').setLevel(logging.WARNING)
 
+MIN_TOKENS = 10
+
 
 class Chunker:
     def __init__(
@@ -21,6 +23,9 @@ class Chunker:
         embedding_model_name: str = "jinaai/jina-embeddings-v2-small-en",
         chunk_size: int = 256,
     ):
+        if chunk_size < 10:
+            raise ValueError("Chunk size must be greater than 10.")
+
         self.chunking_strategy = chunking_strategy
         if isinstance(tokenizer, str):
             self.tokenizer = AutoTokenizer.from_pretrained(
@@ -95,7 +100,16 @@ class Chunker:
                 return None
 
         chunks_and_labels = []
-        for char_start, char_end in nodes:
+
+        if len(token_offsets) < MIN_TOKENS:
+            # If the entire text has fewer than 10 tokens, return it as a single chunk
+            chunks_and_labels.append((0, len(token_offsets) - 1, 1 if span else None))
+            return chunks_and_labels
+
+        i = 0
+        while i < len(nodes):
+            char_start, char_end = nodes[i]
+
             # convert char_start and char_end to token indices
             start_chunk_index = bisect.bisect_left(
                 [offset[0] for offset in token_offsets], char_start
@@ -104,15 +118,38 @@ class Chunker:
                 bisect.bisect_right([offset[1] for offset in token_offsets], char_end)
                 - 1
             )
-            # if the chunk is outside of the tokenized text,
-            # we don't want this sample
-            # and we also don't want any chunks after that,
-            # so break out of loop in this case
+
+            # Ensure each chunk has at least min_tokens tokens
+            while (
+                end_chunk_index - start_chunk_index + 1 < MIN_TOKENS
+                and i < len(nodes) - 1
+            ):
+                # Merge with the next node
+                i += 1
+                char_end = nodes[i][1]
+                end_chunk_index = (
+                    bisect.bisect_right(
+                        [offset[1] for offset in token_offsets], char_end
+                    )
+                    - 1
+                )
+
+            # If the chunk is still less than min_tokens and it's the last node, handle it explicitly
+            if (
+                end_chunk_index - start_chunk_index + 1 < MIN_TOKENS
+                and i == len(nodes) - 1
+            ):
+                end_chunk_index = min(
+                    start_chunk_index + MIN_TOKENS - 1, len(token_offsets) - 1
+                )
+
+            # If the chunk is outside of the tokenized text, break out of loop
             if start_chunk_index >= len(token_offsets) or end_chunk_index >= len(
                 token_offsets
             ):
                 break
-            # determine if this chunk contains the span
+
+            # Determine if this chunk contains the span
             if span:
                 contains_span = (
                     start_chunk_index <= start_token_index <= end_chunk_index
@@ -121,7 +158,9 @@ class Chunker:
                 label = 1 if contains_span else 0
             else:
                 label = None
+
             chunks_and_labels.append((start_chunk_index, end_chunk_index, label))
+            i += 1
 
         return chunks_and_labels
 

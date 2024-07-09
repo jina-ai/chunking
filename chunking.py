@@ -11,21 +11,43 @@ from transformers import AutoTokenizer
 logging.getLogger('sentence_transformers').setLevel(logging.WARNING)
 
 MIN_TOKENS = 10
+DEFAULT_CHUNK_SIZE = 256
+BUFFER_SIZE = 1
+BREAKPOINT_PERCENTILE_THRESHOLD = 0.98
+EMBEDDING_MODEL_NAME = "jinaai/jina-embeddings-v2-small-en"
+
+
+def setup_semantic_chunking(
+    self,
+    buffer_size: int = BUFFER_SIZE,
+    breakpoint_percentile_threshold: float = BREAKPOINT_PERCENTILE_THRESHOLD,
+    embedding_model_name: str = EMBEDDING_MODEL_NAME,
+):
+    self.buffer_size = buffer_size
+    self.breakpoint_percentile_threshold = breakpoint_percentile_threshold
+    self.embed_model = HuggingFaceEmbedding(
+        model_name=embedding_model_name,
+        max_length=512,
+        trust_remote_code=True,
+    )
+    self.splitter = SemanticSplitterNodeParser(
+        buffer_size=self.buffer_size,
+        breakpoint_percentile_threshold=self.breakpoint_percentile_threshold,
+        embed_model=self.embed_model,
+        show_progress=False,
+    )
 
 
 class Chunker:
     def __init__(
         self,
-        chunking_strategy: str,
+        chunking_strategy: str = 'fixed',
         tokenizer: Optional[Union[str, 'AutoTokenizer']] = None,
-        buffer_size: int = 1,
-        breakpoint_percentile_threshold: float = 0.98,
-        embedding_model_name: str = "jinaai/jina-embeddings-v2-small-en",
-        chunk_size: int = 256,
+        buffer_size: int = BUFFER_SIZE,
+        breakpoint_percentile_threshold: float = BREAKPOINT_PERCENTILE_THRESHOLD,
+        embedding_model_name: str = EMBEDDING_MODEL_NAME,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
     ):
-        if chunk_size < 10:
-            raise ValueError("Chunk size must be greater than 10.")
-
         self.chunking_strategy = chunking_strategy
         if isinstance(tokenizer, str):
             self.tokenizer = AutoTokenizer.from_pretrained(
@@ -53,8 +75,14 @@ class Chunker:
             self.chunk_size = chunk_size
         else:
             raise ValueError("Unsupported chunking strategy")
+        self.min_chunk_size = MIN_TOKENS
 
-    def chunk_semantically(self, text: str) -> List[Tuple[int, int, int]]:
+    def chunk_semantically(self, text: str, min_tokens: Optional[int] = None) -> List[Tuple[int, int, int]]:
+        if self.embed_model is None:
+            setup_semantic_chunking()
+
+        min_tokens = min_tokens or self.min_tokens
+
         nodes = [
             (node.start_char_idx, node.end_char_idx)
             for node in self.splitter.get_nodes_from_documents(
@@ -74,7 +102,7 @@ class Chunker:
 
         chunk_spans = []
 
-        if len(token_offsets) < MIN_TOKENS:
+        if len(token_offsets) < min_tokens:
             # If the entire text has fewer than 10 tokens, return it as a single chunk
             chunk_spans.append((0, len(token_offsets) - 1))
             return chunk_spans
@@ -94,7 +122,7 @@ class Chunker:
 
             # Ensure each chunk has at least min_tokens tokens
             while (
-                end_chunk_index - start_chunk_index + 1 < MIN_TOKENS
+                end_chunk_index - start_chunk_index + 1 < min_tokens
                 and i < len(nodes) - 1
             ):
                 # Merge with the next node
@@ -109,11 +137,11 @@ class Chunker:
 
             # If the chunk is still less than min_tokens and it's the last node, handle it explicitly
             if (
-                end_chunk_index - start_chunk_index + 1 < MIN_TOKENS
+                end_chunk_index - start_chunk_index + 1 < min_tokens
                 and i == len(nodes) - 1
             ):
                 end_chunk_index = min(
-                    start_chunk_index + MIN_TOKENS - 1, len(token_offsets) - 1
+                    start_chunk_index + min_tokens - 1, len(token_offsets) - 1
                 )
 
             # If the chunk is outside of the tokenized text, break out of loop
@@ -127,15 +155,16 @@ class Chunker:
 
         return chunk_spans
 
-    def chunk_by_tokens(self, text: str) -> List[Tuple[int, int, int]]:
+    def chunk_by_tokens(self, text: str, chunk_size: Optional[int] = None) -> List[Tuple[int, int, int]]:
+        chunk_size = chunk_size or self.chunk_size
         tokens = self.tokenizer.encode_plus(
             text, return_offsets_mapping=True, add_special_tokens=False
         )
         token_offsets = tokens.offset_mapping
 
         chunk_spans = []
-        for i in range(0, len(token_offsets), self.chunk_size):
-            chunk_end = min(i + self.chunk_size - 1, len(token_offsets) - 1)
+        for i in range(0, len(token_offsets), chunk_size):
+            chunk_end = min(i + chunk_size - 1, len(token_offsets) - 1)
             chunk_spans.append((i, chunk_end))
 
         return chunk_spans
@@ -144,14 +173,17 @@ class Chunker:
         self,
         text: str,
         tokenizer: 'AutoTokenizer' = None,
+        chunking_strategy: str = None,
+        chunk_size: Optional[int] = None,
     ):
+        if chunk_size < 10:
+            raise ValueError("Chunk size must be greater than 10.")
+
         if tokenizer and not self.tokenizer:
             self.tokenizer = tokenizer
-        if self.chunking_strategy == "semantic":
-            if not self.tokenizer:
-                self.tokenizer = tokenizer
+        if chunking_strategy == "semantic":
             return self.chunk_semantically(text)
-        elif self.chunking_strategy == "fixed":
-            return self.chunk_by_tokens(text)
+        elif chunking_strategy == "fixed":
+            return self.chunk_by_tokens(text, chunk_size=chunk_size)
         else:
             raise ValueError("Unsupported chunking strategy")

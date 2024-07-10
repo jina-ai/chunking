@@ -75,7 +75,7 @@ class Chunker:
             self.chunk_size = chunk_size
         else:
             raise ValueError("Unsupported chunking strategy")
-        self.min_chunk_size = MIN_TOKENS
+        self.min_tokens = MIN_TOKENS
 
     def chunk_semantically(self, text: str, min_tokens: Optional[int] = None) -> List[Tuple[int, int, int]]:
         if self.embed_model is None:
@@ -164,7 +164,7 @@ class Chunker:
 
         chunk_spans = []
         for i in range(0, len(token_offsets), chunk_size):
-            chunk_end = min(i + chunk_size - 1, len(token_offsets) - 1)
+            chunk_end = min(i + chunk_size, len(token_offsets) - 1)
             chunk_spans.append((i, chunk_end))
 
         return chunk_spans

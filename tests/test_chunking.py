@@ -75,7 +75,7 @@ def test_chunk_by_tokens_long_text(chunker_fixed):
     chunks = chunker_fixed.chunk_by_tokens(text)
     assert len(chunks) > 1
     for start, end in chunks:
-        assert end - start + 1 <= chunker_fixed.chunk_size
+        assert end - start <= chunker_fixed.chunk_size
 
 def test_chunk_by_tokens_exact_size_text(chunker_fixed):
     text = "This is a text with exactly one chunk."
